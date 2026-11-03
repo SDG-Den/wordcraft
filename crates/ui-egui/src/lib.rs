@@ -544,6 +544,16 @@ pub struct WordApp {
     fonts_frames: u32,
     /// The effective interface theme last installed in egui ([`theme::apply`]).
     applied_theme: Option<theme::Appearance>,
+    /// The suite palette the interface is drawn from (loaded from the shared theme file at
+    /// startup; `None` keeps the built-in theme, as the web build always does).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) palette: Option<craft_ui::theme::palette::Palette>,
+    /// Watches the palette file, so a change restyles the running app.
+    #[cfg(not(target_arch = "wasm32"))]
+    palette_watcher: Option<craft_ui::theme::palette::PaletteWatcher>,
+    /// Whether the palette file has been looked for once this run.
+    #[cfg(not(target_arch = "wasm32"))]
+    palette_loaded: bool,
     /// The display scale (native pixels per point) seen in the last frame, 1.0 before the first;
     /// `ui.interfaceSize` reports the size Auto draws at with it.
     native_scale: f32,

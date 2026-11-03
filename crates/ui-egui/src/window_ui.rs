@@ -186,6 +186,12 @@ impl WordApp {
             recover_fonts_for: _,
             fonts_frames: _,
             applied_theme: _,
+            #[cfg(not(target_arch = "wasm32"))]
+                palette: _,
+            #[cfg(not(target_arch = "wasm32"))]
+                palette_watcher: _,
+            #[cfg(not(target_arch = "wasm32"))]
+                palette_loaded: _,
             native_scale: _,
             legacy_interface_size: _,
             desktop_theme: _,

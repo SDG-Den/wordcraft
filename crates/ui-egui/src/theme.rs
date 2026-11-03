@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use craft_ui::theme::palette::Palette;
 use egui::{Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Rect, Stroke, Visuals};
 
 /// WordCraft's app colour (and its darker ink for text on light backgrounds).
@@ -434,9 +435,115 @@ impl Tokens {
             on_close: Color32::WHITE,
         }
     }
-    pub fn get(ctx: &egui::Context) -> Tokens {
-        if ctx.global_style().visuals.dark_mode { Tokens::dark() } else { Tokens::light() }
+    /// The built-in tokens for the palette's family, with the core chrome taken from `palette`.
+    /// A palette decides dark or light: a light palette never keeps dark stock visuals, whichever
+    /// appearance was saved. `appearance` is that saved choice; only its family is consulted.
+    /// Page, markup, comment, track-change and domain colours stay the built-in ones.
+    pub fn for_palette(appearance: Appearance, palette: &Palette) -> Tokens {
+        let family = family_appearance(appearance, Some(palette));
+        let mut tokens = if family.is_dark(None) { Tokens::dark() } else { Tokens::light() };
+        let background = palette.background();
+        let panel = palette.surface();
+        let raised = palette.surface_alt();
+        let outline = palette.outline();
+        let accent = palette.accent();
+        let input = blend(background, panel, if tokens.dark { 0.15 } else { 0.0 });
+        tokens.title_bar = background;
+        tokens.ribbon = panel;
+        tokens.tab_strip = background;
+        tokens.panel = panel;
+        tokens.border = outline;
+        tokens.border_strong = blend(outline, palette.text_muted(), 0.45);
+        tokens.text = readable_on(palette.text(), panel, 4.5);
+        tokens.text_dim = readable_on(palette.text_muted(), panel, 3.0);
+        tokens.text_disabled = blend(palette.text_muted(), background, 0.5);
+        tokens.icon = blend(palette.text_muted(), palette.text(), 0.4);
+        tokens.hover = raised;
+        tokens.pressed = blend(raised, outline, 0.25);
+        tokens.checked = blend(panel, accent, 0.18);
+        tokens.accent = accent;
+        tokens.nav = readable_white_on(accent, 4.5);
+        tokens.accent_text = readable_on(accent, panel, 4.5);
+        tokens.on_accent = palette.contrast_text();
+        tokens.input = input;
+        tokens.input_border = readable_on(outline, input, 3.0);
+        tokens.group_label = readable_on(palette.text_muted(), panel, 3.0);
+        tokens.status_bar = background;
+        tokens.selection = with_alpha(accent, if tokens.dark { 0x55 } else { 0x48 });
+        tokens.find_highlight = with_alpha(palette.warning(), if tokens.dark { 0x70 } else { 0x90 });
+        tokens.page_shadow = Color32::from_black_alpha(if tokens.dark { 0x60 } else { 0x22 });
+        tokens.menu = raised;
+        tokens
     }
+
+    /// The tokens `ctx` was styled with: the suite palette's when it has one, the built-in theme
+    /// otherwise ([`apply_with_palette`] stores them, [`apply`] clears them).
+    pub fn get(ctx: &egui::Context) -> Tokens {
+        ctx.data(|d| d.get_temp::<Tokens>(tokens_id()))
+            .unwrap_or_else(|| if ctx.global_style().visuals.dark_mode { Tokens::dark() } else { Tokens::light() })
+    }
+}
+
+fn tokens_id() -> egui::Id {
+    egui::Id::unique("wordcraft-theme-tokens")
+}
+
+/// The built-in family to start from: a palette decides dark or light, and the saved appearance
+/// applies only when there is no palette (or its family already matches).
+fn family_appearance(appearance: Appearance, palette: Option<&Palette>) -> Appearance {
+    let saved_dark = appearance.is_dark(None);
+    match palette {
+        Some(palette) if palette.is_dark() && !saved_dark => Appearance::Dark,
+        Some(palette) if !palette.is_dark() && saved_dark => Appearance::Light,
+        _ => appearance,
+    }
+}
+
+fn blend(from: Color32, to: Color32, amount: f32) -> Color32 {
+    from.lerp_to_gamma(to, amount.clamp(0.0, 1.0))
+}
+
+fn with_alpha(color: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+}
+
+/// `foreground` moved away from `background` until it reaches `target` WCAG contrast, so a palette
+/// whose text sits too close to its surface still reads.
+fn readable_on(foreground: Color32, background: Color32, target: f32) -> Color32 {
+    let away = if wcag_contrast(background, Color32::WHITE) >= wcag_contrast(background, Color32::BLACK) { Color32::WHITE } else { Color32::BLACK };
+    let mut color = foreground;
+    for _ in 0..20 {
+        if wcag_contrast(color, background) >= target {
+            break;
+        }
+        color = blend(color, away, 0.1);
+    }
+    color
+}
+
+/// `color` darkened until white text on it reaches `target` contrast (the File page's side bar
+/// draws white text and icons in both themes).
+fn readable_white_on(color: Color32, target: f32) -> Color32 {
+    let mut color = color;
+    for _ in 0..20 {
+        if wcag_contrast(Color32::WHITE, color) >= target {
+            break;
+        }
+        color = blend(color, Color32::BLACK, 0.1);
+    }
+    color
+}
+
+fn wcag_contrast(a: Color32, b: Color32) -> f32 {
+    let luminance = |c: Color32| {
+        let channel = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.040_45 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+    };
+    let (x, y) = (luminance(a), luminance(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
 }
 
 /// Install the UI fonts (Inter, JetBrains Mono) and the craft-fonts CJK interface faces if built
@@ -770,8 +877,28 @@ fn tracked_job(text: &str, font: &FontId, tracking: f32, color: Color32) -> egui
 /// Setting a concrete theme for `System` would pin the native window too, and macOS then stops
 /// reporting appearance changes (#311).
 pub fn apply(ctx: &egui::Context, appearance: Appearance) {
-    ctx.set_visuals_of(egui::Theme::Light, visuals(&Tokens::light()));
-    ctx.set_visuals_of(egui::Theme::Dark, visuals(&Tokens::dark()));
+    apply_with_palette(ctx, appearance, None);
+}
+
+/// [`apply`] with the suite palette, whose family decides the dark or light visuals; the saved
+/// appearance applies when there is no palette, or when its family already matches. Both of
+/// egui's styles get the chosen family, so egui following the system on its own never swaps in
+/// its stock look.
+pub fn apply_with_palette(ctx: &egui::Context, appearance: Appearance, palette: Option<&Palette>) {
+    let family = family_appearance(appearance, palette);
+    let (light, dark) = match palette {
+        Some(palette) => {
+            let tokens = Tokens::for_palette(family, palette);
+            ctx.data_mut(|d| d.insert_temp(tokens_id(), tokens));
+            (tokens, tokens)
+        }
+        None => {
+            ctx.data_mut(|d| d.remove::<Tokens>(tokens_id()));
+            (Tokens::light(), Tokens::dark())
+        }
+    };
+    ctx.set_visuals_of(egui::Theme::Light, visuals(&light));
+    ctx.set_visuals_of(egui::Theme::Dark, visuals(&dark));
     ctx.all_styles_mut(|s| {
         s.spacing.item_spacing = egui::vec2(6.0, 4.0);
         s.spacing.button_padding = egui::vec2(8.0, 3.0);
@@ -785,7 +912,11 @@ pub fn apply(ctx: &egui::Context, appearance: Appearance) {
     });
     ctx.options_mut(|o| {
         o.fallback_theme = egui::Theme::Light;
-        o.theme_preference = appearance.preference();
+        o.theme_preference = if palette.is_some() {
+            if family.is_dark(None) { egui::ThemePreference::Dark } else { egui::ThemePreference::Light }
+        } else {
+            appearance.preference()
+        };
     });
 }
 
@@ -1080,5 +1211,118 @@ mod tests {
             symbols.iter().filter(|(c, _)| !f.has_glyph(&font, *c)).map(|(c, file)| format!("{c} U+{:04X} in {file}", *c as u32)).collect()
         });
         assert!(missing.is_empty(), "symbols without a glyph: {missing:#?}");
+    }
+
+    /// A canonical suite palette with readable chrome, for the mapping tests.
+    fn palette(dark: bool) -> craft_ui::theme::palette::Palette {
+        let json = if dark {
+            serde_json::json!({
+                "name": "test-dark", "dark": true,
+                "base00": "#101418", "base01": "#1a2026", "base02": "#242c34",
+                "base03": "#56606a", "base04": "#9aa4ae", "base05": "#e6ebf0",
+                "base09": "#e0a030", "base0D": "#4f8cff"
+            })
+        } else {
+            serde_json::json!({
+                "name": "test-light", "dark": false,
+                "base00": "#f4f1ea", "base01": "#fffdf7", "base02": "#e7e2d8",
+                "base03": "#b3aa9a", "base04": "#6b655c", "base05": "#1c2228",
+                "base09": "#9a6a00", "base0D": "#1f57c3"
+            })
+        };
+        craft_ui::theme::palette::Palette::from_canonical_json(&json).unwrap()
+    }
+
+    /// A dark palette overrides the chrome roles and leaves the page, comment and markup colours
+    /// from the built-in dark theme.
+    #[test]
+    fn a_dark_palette_maps_the_core_chrome() {
+        let palette = palette(true);
+        let t = super::Tokens::for_palette(super::Appearance::Dark, &palette);
+        let built_in = super::Tokens::dark();
+        assert!(t.dark);
+        assert_eq!(t.title_bar, palette.background());
+        assert_eq!(t.ribbon, palette.surface());
+        assert_eq!(t.tab_strip, palette.background());
+        assert_eq!(t.panel, palette.surface());
+        assert_eq!(t.border, palette.outline());
+        assert_eq!(t.text, palette.text());
+        assert_eq!(t.accent, palette.accent());
+        assert_eq!(t.menu, palette.surface_alt());
+        assert_eq!(t.on_accent, palette.contrast_text());
+        assert_eq!(t.canvas, built_in.canvas, "the page is not the palette's");
+        assert_eq!(t.balloon, built_in.balloon, "comment colours are not the palette's");
+        assert_eq!(t.author_colors, built_in.author_colors);
+    }
+
+    /// A light palette overrides the same roles from the built-in light theme.
+    #[test]
+    fn a_light_palette_maps_the_core_chrome() {
+        let palette = palette(false);
+        let t = super::Tokens::for_palette(super::Appearance::Light, &palette);
+        let built_in = super::Tokens::light();
+        assert!(!t.dark);
+        assert_eq!(t.title_bar, palette.background());
+        assert_eq!(t.ribbon, palette.surface());
+        assert_eq!(t.tab_strip, palette.background());
+        assert_eq!(t.panel, palette.surface());
+        assert_eq!(t.border, palette.outline());
+        assert_eq!(t.text, palette.text());
+        assert_eq!(t.accent, palette.accent());
+        assert_eq!(t.menu, palette.surface_alt());
+        assert_eq!(t.canvas, built_in.canvas, "the page is not the palette's");
+        assert_eq!(t.balloon, built_in.balloon, "comment colours are not the palette's");
+    }
+
+    /// The palette, not the saved appearance, decides the family: a light palette with a dark
+    /// appearance draws light visuals and light shadows in both of egui's styles.
+    #[test]
+    fn the_palette_family_overrides_the_saved_appearance() {
+        let light = palette(false);
+        let dark = palette(true);
+        assert!(!super::Tokens::for_palette(super::Appearance::Dark, &light).dark);
+        assert!(super::Tokens::for_palette(super::Appearance::Light, &dark).dark);
+
+        let ctx = egui::Context::default();
+        super::apply_with_palette(&ctx, super::Appearance::Dark, Some(&light));
+        assert_eq!(ctx.options(|o| o.theme_preference), egui::ThemePreference::Light);
+        assert_eq!(ctx.style_of(egui::Theme::Light).visuals.panel_fill, light.surface());
+        assert_eq!(super::Tokens::get(&ctx).panel, light.surface(), "widgets read the palette");
+        assert!(!ctx.style_of(egui::Theme::Dark).visuals.dark_mode, "both styles are light");
+
+        let ctx = egui::Context::default();
+        super::apply_with_palette(&ctx, super::Appearance::Light, Some(&dark));
+        assert_eq!(ctx.options(|o| o.theme_preference), egui::ThemePreference::Dark);
+        assert!(ctx.style_of(egui::Theme::Light).visuals.dark_mode, "both styles are dark");
+    }
+
+    /// With no palette the saved appearance and the built-in tokens still apply unchanged.
+    #[test]
+    fn without_a_palette_the_built_in_theme_is_unchanged() {
+        assert_eq!(super::family_appearance(super::Appearance::System, None), super::Appearance::System);
+        assert_eq!(super::family_appearance(super::Appearance::Dark, None), super::Appearance::Dark);
+
+        let ctx = egui::Context::default();
+        super::apply_with_palette(&ctx, super::Appearance::Dark, None);
+        assert_eq!(ctx.options(|o| o.theme_preference), egui::ThemePreference::Dark);
+        assert_eq!(ctx.style_of(egui::Theme::Dark).visuals.panel_fill, super::Tokens::dark().ribbon);
+        assert!(ctx.style_of(egui::Theme::Dark).visuals.dark_mode);
+        assert_eq!(super::Tokens::get(&ctx).ribbon, super::Tokens::dark().ribbon, "the built-ins are kept");
+    }
+
+    /// Text drawn on the palette's accent reaches the app's 4.5:1 target, and the palette's text
+    /// reads on its panels, as the built-in themes do.
+    #[test]
+    fn palette_text_reads_on_the_accent_and_panels() {
+        for dark in [true, false] {
+            let palette = palette(dark);
+            let t = super::Tokens::for_palette(super::Appearance::System, &palette);
+            let r = contrast(t.on_accent, t.accent);
+            assert!(r >= 4.5, "dark={dark}: on_accent on the accent is {r:.2}:1");
+            let r = contrast(t.text, t.panel);
+            assert!(r >= 4.5, "dark={dark}: text on the panel is {r:.2}:1");
+            let r = contrast(egui::Color32::WHITE, t.nav);
+            assert!(r >= 4.5, "dark={dark}: white on the side bar is {r:.2}:1");
+        }
     }
 }

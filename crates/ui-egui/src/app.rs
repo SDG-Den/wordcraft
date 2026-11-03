@@ -120,6 +120,12 @@ impl WordApp {
             recent_fonts_for: Vec::new(),
             fonts_frames: 0,
             applied_theme: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            palette: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            palette_watcher: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            palette_loaded: false,
             native_scale: 1.0,
             legacy_interface_size: None,
             // Inert until the app binary calls `watch_desktop_theme`.
@@ -251,6 +257,17 @@ impl WordApp {
         if let Some(answer) = self.desktop_theme.take_change() {
             self.desktop_dark = Some(answer);
         }
+        // The suite palette file is looked for once, then polled while the window is visible: a
+        // change restyles without a restart. The web build keeps the built-in theme.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if !self.palette_loaded {
+                self.palette = craft_ui::theme::palette::Palette::load().map(|loaded| loaded.palette);
+                self.palette_watcher = Some(craft_ui::theme::palette::PaletteWatcher::from_env());
+                self.palette_loaded = true;
+            }
+            self.poll_palette(ctx);
+        }
         // Both palettes are installed and egui picks one: with `System` it follows an OS appearance
         // change live (winit reports it and repaints, #311). Where winit is silent (Linux) the
         // desktop portal's answer fills in instead. The interface follows the Interface theme
@@ -264,6 +281,9 @@ impl WordApp {
             other => other,
         };
         if self.applied_theme != Some(effective) {
+            #[cfg(not(target_arch = "wasm32"))]
+            theme::apply_with_palette(ctx, effective, self.palette.as_ref());
+            #[cfg(target_arch = "wasm32")]
             theme::apply(ctx, effective);
             self.applied_theme = Some(effective);
         }
