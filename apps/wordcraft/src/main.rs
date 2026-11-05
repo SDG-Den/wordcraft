@@ -195,10 +195,16 @@ fn load_prefs(app: &mut WordApp) {
     if !prefs_enabled() {
         return;
     }
-    if let Some(p) = prefs_path()
-        && let Ok(bytes) = std::fs::read(&p)
-        && let Some(ui) = UiState::from_json(&bytes)
+    let Some(p) = prefs_path() else { return };
+    let Ok(bytes) = std::fs::read(&p) else { return };
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return };
+    if let Some(dir) = p.parent()
+        && let Some(overlay) = craft_settings::overlay::load_overlay(dir)
     {
+        craft_settings::overlay::merge(&mut value, overlay);
+    }
+    let Ok(merged) = serde_json::to_vec(&value) else { return };
+    if let Some(ui) = UiState::from_json(&merged) {
         app.apply_prefs(ui);
     }
 }
