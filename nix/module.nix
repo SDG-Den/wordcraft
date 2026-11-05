@@ -16,6 +16,10 @@
   # The package of this flake; `flake.nix` passes it through `_module.args`, so importing the
   # module directly needs no overlay.
   wordcraftPackage ? pkgs.wordcraft,
+  # `flake.nix` passes the source build and the pre-built release binary separately. Importing the
+  # module directly falls back to `wordcraftPackage` and no binary.
+  wordcraftSourcePackage ? wordcraftPackage,
+  wordcraftBinaryPackage ? null,
   ...
 }:
 
@@ -58,10 +62,24 @@ in
   options.programs.wordcraft = {
     enable = mkEnableOption "WordCraft";
 
+    useBinary = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Install the pre-built Linux binary from `binary-url.json` when this system has one,
+        instead of building from source. Falls back to the source build when the file is missing
+        or the system is unsupported.
+      '';
+    };
+
     package = mkOption {
       type = types.package;
-      default = wordcraftPackage;
-      defaultText = lib.literalMD "the `wordcraft` package of this flake";
+      default =
+        if cfg.useBinary && wordcraftBinaryPackage != null then
+          wordcraftBinaryPackage
+        else
+          wordcraftSourcePackage;
+      defaultText = lib.literalMD "the pre-built binary from `binary-url.json`, or the source build";
       description = "The WordCraft package to install.";
     };
 
